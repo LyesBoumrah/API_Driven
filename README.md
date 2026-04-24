@@ -71,7 +71,153 @@ Difficulté : Facile (~30 minutes)
 ---------------------------------------------------
 **Complétez et documentez ce fichier README.md** pour nous expliquer comment utiliser votre solution.  
 Faites preuve de pédagogie et soyez clair dans vos expliquations et processus de travail.  
-   
+Réponse :
+## Objectif
+
+Cet atelier a pour objectif de concevoir une architecture API-driven permettant de piloter une infrastructure via des appels HTTP.
+
+Une requête HTTP envoyée à une API déclenche une fonction Lambda qui exécute des actions sur une instance EC2 dans un environnement AWS simulé avec LocalStack.
+
+---
+
+## Architecture
+
+L’architecture mise en place repose sur les composants suivants :
+
+- API Gateway : point d’entrée HTTP
+- Lambda : logique métier (start / stop)
+- EC2 : ressource pilotée
+- LocalStack : simulation AWS
+
+Flux :
+
+Client → API Gateway → Lambda → EC2
+
+---
+
+## Mise en place de l’environnement
+
+### Installation de LocalStack
+
+```bash
+python3 -m venv rep_localstack
+pip install localstack
+Configuration du token
+export LOCALSTACK_AUTH_TOKEN=YOUR_TOKEN
+Lancement
+localstack start -d
+Vérification
+curl http://localhost:4566/_localstack/health
+Configuration AWS CLI
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+Création de l’instance EC2
+AMI_ID=$(aws --endpoint-url=http://localhost:4566 ec2 describe-images \
+  --owners amazon \
+  --query "Images[0].ImageId" \
+  --output text)
+
+aws --endpoint-url=http://localhost:4566 ec2 run-instances \
+  --image-id "$AMI_ID" \
+  --instance-type t2.micro
+
+Récupération de l’instance :
+
+aws --endpoint-url=http://localhost:4566 ec2 describe-instances \
+  --query "Reservations[0].Instances[0].InstanceId" \
+  --output text
+Création de la Lambda
+Code
+import json
+import boto3
+import os
+
+INSTANCE_ID = os.environ.get("INSTANCE_ID")
+
+ec2 = boto3.client(
+    "ec2",
+    endpoint_url="http://localhost.localstack.cloud:4566",
+    region_name="us-east-1",
+    aws_access_key_id="test",
+    aws_secret_access_key="test"
+)
+
+def lambda_handler(event, context):
+    path = event.get("rawPath") or event.get("path", "")
+
+    if path.endswith("/start"):
+        ec2.start_instances(InstanceIds=[INSTANCE_ID])
+        return {"statusCode": 200, "body": json.dumps({"action": "start", "instance_id": INSTANCE_ID})}
+
+    if path.endswith("/stop"):
+        ec2.stop_instances(InstanceIds=[INSTANCE_ID])
+        return {"statusCode": 200, "body": json.dumps({"action": "stop", "instance_id": INSTANCE_ID})}
+
+    return {"statusCode": 400, "body": json.dumps({"error": "invalid route"})}
+Déploiement
+zip lambda.zip lambda_function.py
+aws --endpoint-url=http://localhost:4566 iam create-role \
+  --role-name lambda-ec2-role \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "lambda.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+aws --endpoint-url=http://localhost:4566 lambda create-function \
+  --function-name ec2-controller \
+  --runtime python3.12 \
+  --handler lambda_function.lambda_handler \
+  --zip-file fileb://lambda.zip \
+  --role arn:aws:iam::000000000000:role/lambda-ec2-role \
+  --environment Variables="{INSTANCE_ID=YOUR_INSTANCE_ID}"
+Création de l’API Gateway
+API_ID=$(aws --endpoint-url=http://localhost:4566 apigatewayv2 create-api \
+  --name ec2-api \
+  --protocol-type HTTP \
+  --query "ApiId" \
+  --output text)
+INTEGRATION_ID=$(aws --endpoint-url=http://localhost:4566 apigatewayv2 create-integration \
+  --api-id $API_ID \
+  --integration-type AWS_PROXY \
+  --integration-uri arn:aws:lambda:us-east-1:000000000000:function:ec2-controller \
+  --payload-format-version 2.0 \
+  --query "IntegrationId" \
+  --output text)
+Routes
+aws --endpoint-url=http://localhost:4566 apigatewayv2 create-route \
+  --api-id $API_ID \
+  --route-key "GET /start" \
+  --target "integrations/$INTEGRATION_ID"
+aws --endpoint-url=http://localhost:4566 apigatewayv2 create-route \
+  --api-id $API_ID \
+  --route-key "GET /stop" \
+  --target "integrations/$INTEGRATION_ID"
+Stage
+aws --endpoint-url=http://localhost:4566 apigatewayv2 create-stage \
+  --api-id $API_ID \
+  --stage-name dev \
+  --auto-deploy
+Tests
+Start
+curl "http://localhost:4566/restapis/$API_ID/dev/_user_request_/start"
+Stop
+curl "http://localhost:4566/restapis/$API_ID/dev/_user_request_/stop"
+Résultat
+{"action":"start","instance_id":"i-..."}
+{"action":"stop","instance_id":"i-..."}
+Conclusion
+
+Cet atelier démontre qu’il est possible de piloter dynamiquement une infrastructure via des API HTTP en s’appuyant sur des services serverless.
+
+L’utilisation de LocalStack permet de reproduire un environnement AWS complet en local, facilitant le développement et les tests.
+
+Cette approche API-driven permet une automatisation avancée des infrastructures et s’intègre parfaitement dans des architectures modernes orientées microservices et cloud.
+
+
 ---------------------------------------------------
 Evaluation
 ---------------------------------------------------
